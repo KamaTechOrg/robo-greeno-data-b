@@ -26,11 +26,11 @@ class IQAGate:
         if not os.path.exists(path):
             print(f"Warning: Config file {path} not found. Using defaults.")
             return {
-                "min_luminance": 50.0,
-                "max_luminance": 190.0,
-                "min_laplacian_variance": 15.0,
-                "max_brisque": 45.0,
-                "max_niqe": 8.0
+                "min_luminance": 30.0,
+                "max_luminance": 180.0,
+                "min_laplacian_variance": 4.0,
+                "max_brisque": 65.0,
+                "max_niqe": 8.5
             }
         with open(path, 'r') as file:
             return json.load(file)
