@@ -68,7 +68,7 @@ class IQAGate:
         
         try:
             img_rgb = cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB)
-            img_tensor = torch.from_numpy(img_rgb).permute(2,0,1).unsqueeze(0).float / 255.0
+            img_tensor = torch.from_numpy(img_rgb).permute(2,0,1).unsqueeze(0).float() / 255.0
             img_tensor = img_tensor.to(self.device)
             
             brisque_score = self.brisque_metric(img_tensor).item()
