@@ -3,6 +3,9 @@ import json
 import cv2
 
 from frame_quality.iqa_gate import IQAGate
+from frame_source.file_source import FileSource
+from frame_source.folder_source import FolderSource
+from frame_source.synthetic_source import SyntheticSource
 
 
 iqa_gate = IQAGate()
@@ -22,41 +25,55 @@ def mock_detection(image):
     return {
         "label": "strawberry",
         "confidence": 0.9,
-        "bbox": [10, 20, 50, 50]
+        "bbox": [10, 20, 50, 50],
+        "success": True,
+        "reason": ""
     }
 
 
-def build_json(detection, quality):
+def build_json(frame, detection, quality, detection_error = None):
     # Mock implementation of MQTT payload
     return {
+        "frame_id": frame.frame_id,
+        "timestamp": frame.timestamp,
+        "source": frame.source,
         "image_quality": quality,
-        "detection": detection
+        "detection": detection,
+        "detection_error": detection_error
     }
 
 
-def run_pipeline(image):
+def run_pipeline(frame):
     print("Running IQA...")
-    quality = run_iqa(image)
+    quality = run_iqa(frame.image)
 
-    if quality["status"] != "OK":
-        return {
-            "image_quality": quality,
-            "detection": None
-        }
-        
-    print("Running detection...")
-    detection = mock_detection(image)
+    detection = None
+    detection_error = None
+    
+    if quality["status"] == "OK":
+        try:
+            print("Running detection...")
+            detection = mock_detection(frame.image)
+        except Exception as e:
+            detection_error = str(e)
+    else:
+        detection_error = "Skipped due to IQA failure"
 
     print("Building MQTT payload...")
-    payload = build_json(detection, quality)
+    payload = build_json(frame, detection, quality, detection_error)
 
     return payload
 
 
 if __name__ == "__main__":
-    image_path = "apple.jpg"
-    image = cv2.imread(image_path)
-    result = run_pipeline(image)
+    source = SyntheticSource()
+    print(f"the source is {source}")
+    while True:
+        frame = source.read()
+        
+        if frame is None:
+            break
+        result = run_pipeline(frame)
 
-    print("\nPipeline Output:")
-    print(json.dumps(result, indent=4))
+        print("\nPipeline Output:")
+        print(json.dumps(result, indent=4))
