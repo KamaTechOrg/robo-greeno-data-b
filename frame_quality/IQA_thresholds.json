@@ -1,0 +1,7 @@
+{
+    "min_luminance": 30.0,
+    "max_luminance": 180.0,
+    "min_laplacian_variance": 4.0,
+    "max_brisque": 65.0,
+    "max_niqe": 8.5
+}
