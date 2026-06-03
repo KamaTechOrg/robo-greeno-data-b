@@ -25,3 +25,6 @@ class BaseFrameSource(ABC):
         Release allocated resources.
         """
         pass
+    
+    def reset(self) -> None:
+        pass
