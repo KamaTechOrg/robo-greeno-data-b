@@ -1,11 +1,19 @@
 import json
 
+import cv2
+
+from frame_quality.iqa_gate import IQAGate
+
+
+iqa_gate = IQAGate()
 
 def run_iqa(image):
-    # Mock implementation of Image Quality Assessment
+    is_good, reason, metrics = iqa_gate.evaluate(image)
+
     return {
-        "status": "OK",
-        "score": 0.95
+        "status": "OK" if is_good else "FAILED",
+        "reason": reason,
+        "metrics": metrics
     }
 
 
@@ -30,6 +38,12 @@ def run_pipeline(image):
     print("Running IQA...")
     quality = run_iqa(image)
 
+    if quality["status"] != "OK":
+        return {
+            "image_quality": quality,
+            "detection": None
+        }
+        
     print("Running detection...")
     detection = mock_detection(image)
 
@@ -40,8 +54,8 @@ def run_pipeline(image):
 
 
 if __name__ == "__main__":
-    image = "sample.jpg"
-
+    image_path = "apple.jpg"
+    image = cv2.imread(image_path)
     result = run_pipeline(image)
 
     print("\nPipeline Output:")
