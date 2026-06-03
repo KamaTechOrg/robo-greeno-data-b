@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
+from models.frame import Frame
+
 
 class BaseFrameSource(ABC):
     """
@@ -11,14 +13,9 @@ class BaseFrameSource(ABC):
     """
 
     @abstractmethod
-    def read(self) -> np.ndarray:
+    def read(self) -> Frame:
         """
         Return the next frame.
-
-        Returns:
-            np.ndarray:
-                Frame in OpenCV format:
-                (height, width, 3), dtype=uint8
         """
         pass
 

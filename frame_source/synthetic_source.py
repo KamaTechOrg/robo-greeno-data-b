@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 from frame_source.base_frame_source import BaseFrameSource
+from models.frame import Frame
 
 class SyntheticSource(BaseFrameSource):
     """
@@ -84,7 +85,12 @@ class SyntheticSource(BaseFrameSource):
 
         self.frame_count += 1
 
-        return frame
+        return Frame(
+            image=frame,
+            timestamp=time.time(),
+            frame_id=self.frame_count,
+            source="synthetic"
+        )
 
     def release(self) -> None:
         """
