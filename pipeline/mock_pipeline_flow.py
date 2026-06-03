@@ -4,6 +4,7 @@ import cv2
 
 from frame_quality.iqa_gate import IQAGate
 from frame_source.file_source import FileSource
+from frame_source.webcam_source import WebcamSource
 
 
 iqa_gate = IQAGate()
@@ -64,7 +65,7 @@ def run_pipeline(frame):
 
 
 if __name__ == "__main__":
-    source = FileSource("images/orange.jpg")
+    source = WebcamSource()
     while True:
         frame = source.read()
         
