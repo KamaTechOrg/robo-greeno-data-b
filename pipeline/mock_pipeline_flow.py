@@ -4,8 +4,6 @@ import cv2
 
 from frame_quality.iqa_gate import IQAGate
 from frame_source.file_source import FileSource
-from frame_source.folder_source import FolderSource
-from frame_source.synthetic_source import SyntheticSource
 
 
 iqa_gate = IQAGate()
@@ -50,7 +48,7 @@ def run_pipeline(frame):
     detection = None
     detection_error = None
     
-    if quality["status"] == "OK":
+    if quality["status"] in ["OK", "Borderline"]:
         try:
             print("Running detection...")
             detection = mock_detection(frame.image)
@@ -66,8 +64,7 @@ def run_pipeline(frame):
 
 
 if __name__ == "__main__":
-    source = SyntheticSource()
-    print(f"the source is {source}")
+    source = FileSource("images/orange.jpg")
     while True:
         frame = source.read()
         
