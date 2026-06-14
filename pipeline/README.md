@@ -4,7 +4,7 @@ This is the **real-model** batch pipeline. It reads images from a folder, gates 
 through the IQA quality check, runs **YOLOv8 fruit detection**, then for each detected
 fruit it saves a crop, uploads it to **MinIO**, calls the **AgCloud defect service**, and
 runs the **conditional ripeness** PyTorch model. The result is assembled into the AgCloud
-JSON payload and printed to stdout.
+JSON payload, **published to MQTT**, and printed to stdout.
 
 > Contrast with [`mock_pipeline_flow.py`](mock_pipeline_flow.py), which uses a stub detector and
 > no external services. Use that one if you just want to exercise the IQA gate and payload shape.
@@ -63,6 +63,13 @@ pip install opencv-python torch torchvision pyiqa ultralytics minio requests pil
 > First run downloads the MobileNetV3 ImageNet weights (for the ripeness backbone) and any
 > `pyiqa` metric weights, so you need internet access on first launch.
 
+> **Python version note.** Verified working on Python 3.12 **and** 3.14. On Python 3.14, `pip install
+> pyiqa` may error while building the transitive `filterpy` dependency (`metadata-generation-failed`).
+> That's harmless here — `filterpy` is **not** used by the BRISQUE/NIQE metrics this pipeline needs,
+> and `import pyiqa` still works. If the error aborts the whole install, install the rest first and
+> add pyiqa separately: `pip install pyiqa` (ignore the filterpy failure), or use a Python 3.11/3.12
+> environment to avoid it entirely.
+
 ### 2. Model weights (gitignored — obtain separately)
 
 Both `.pt` files are excluded by `.gitignore` and are **expected at the repository root**
@@ -103,23 +110,26 @@ image once, in sorted filename order, then exits.
 
 ### 4. AgCloud services (minimal set)
 
-This script only talks to **two** AgCloud services. You do **not** need the full stack
-(Kafka/Flink/Postgres/MQTT). Start just these from the AgCloud repo's root
-`docker-compose.yml`:
+This script talks to **three** AgCloud services. You do **not** need the full stack
+(Kafka/Flink/Postgres). Start just these from the AgCloud repo's root `docker-compose.yml`:
 
-| Service                 | Compose name           | Port (host) | Used by the script as              |
-|-------------------------|------------------------|-------------|------------------------------------|
-| Hot object storage      | `minio-hot`            | `9000`      | `localhost:9000` (S3 API)          |
-| Fruit defect inference  | `fruit-inference-http` | `8011`      | `http://localhost:8011/infer_json` |
-| MQTT broker             | `mosquitto`            | `1883`      | `localhost:1883` (publish target)  |
+| Service                 | Compose name           | Port (host) | Used by the script as              | Required? |
+|-------------------------|------------------------|-------------|------------------------------------|-----------|
+| Hot object storage      | `minio-hot`            | `9000`      | `localhost:9000` (S3 API)          | **Yes** — connected on startup |
+| Fruit defect inference  | `fruit-inference-http` | `8011`      | `http://localhost:8011/infer_json` | Optional  |
+| MQTT broker             | `mosquitto`            | `1883`      | `localhost:1883` (publish target)  | Optional  |
 
 ```bash
 # from the AgCloud-main repo root
 docker compose up -d minio-hot fruit-inference-http mosquitto
 ```
 
-`mosquitto` is optional — without it, publishing is skipped (warning logged) but the pipeline
-still runs and prints payloads. See [MQTT publishing](#mqtt-publishing).
+- **MinIO is mandatory.** The script calls `mc.bucket_exists()` at import time, so if MinIO is
+  not up on `localhost:9000` it **crashes on startup** before processing anything.
+- **The defect service is optional.** If `localhost:8011` is down, `call_defect_model()` catches
+  the error and the crop's `defect_result` becomes `{"error": "..."}` — detection + ripeness still run.
+- **The MQTT broker is optional.** Without it, publishing is skipped (warning logged) and the
+  pipeline still runs and prints payloads. See [MQTT publishing](#mqtt-publishing).
 
 Credentials are hard-coded in the script and match AgCloud defaults:
 
@@ -128,10 +138,6 @@ Credentials are hard-coded in the script and match AgCloud defaults:
 - `fruit-inference-http` runs with `TEAM=fruit` and is published on `8011:8004`. It reads the
   uploaded crop back out of MinIO by `{bucket, key}`, so MinIO must be reachable from that
   container (it is, on the `ag_cloud` docker network).
-
-> **The defect service is effectively optional.** If `localhost:8011` is down, `call_defect_model()`
-> catches the error and the crop's `defect_result` becomes `{"error": "..."}` — the rest of the
-> pipeline (detection + ripeness) still runs and still prints a payload.
 
 ---
 
@@ -153,7 +159,7 @@ python -m pipeline.pipeline_using_agcloud_models
 repo root and it's on `PYTHONPATH`; if you hit a `ModuleNotFoundError`, set
 `PYTHONPATH=.` first: `set PYTHONPATH=.` on Windows / `export PYTHONPATH=.` on bash).
 
-You should see, per image:
+You should see startup logs followed by one JSON block per image:
 
 ```
 Loading Models...
@@ -162,19 +168,47 @@ Running IQA...
 Running detection...
 Building MQTT payload...
 Publishing to MQTT...
+```
 
-Pipeline Output:
+A frame that **passes** the gate (real output for `images/orange.jpg`, trimmed):
+
+```json
 {
-    "frame_id": 0,
-    "timestamp": 1718370000.123,
-    "source": "images/strawberry_01.jpg",
-    "image_quality": { "status": "OK", "reason": "OK", "metrics": { ... } },
+    "frame_id": 1,
+    "timestamp": 1781472652.85,
+    "source": "images\\orange.jpg",
+    "image_quality": {
+        "status": "Borderline",
+        "reason": "Borderline",
+        "metrics": { "luminance": 68.42, "laplacian": 3293.07,
+                     "brisque": 24.03, "niqe": 11.96, "final_score": 0.542 }
+    },
     "detection": {
-        "run_id": "....",
+        "run_id": "c8279798-...",
         "total_fruits": 1,
-        "results": [ { "label": "apple", "ripeness_result": { ... }, "defect_result": { ... } } ]
+        "results": [
+            {
+                "fruit_index": 0,
+                "label": "orange",
+                "minio_key": "pipeline/c8279798-.../crops/crop_0.jpg",
+                "defect_result": { "ok": true, "label": "ok", "score": 0.013, "team": "fruit" },
+                "ripeness_result": { "ripeness_label": "unripe", "confidence": 0.9999 }
+            }
+        ]
     },
     "detection_error": null
+}
+```
+
+A frame that **fails** the gate (real output for `images/apple.jpg`) — detection is skipped:
+
+```json
+{
+    "frame_id": 0,
+    "source": "images\\apple.jpg",
+    "image_quality": { "status": "FAILED", "reason": "...", "metrics": { ... } },
+    "detection": null,
+    "detection_error": "Skipped due to IQA failure"
 }
 ```
 
@@ -198,8 +232,19 @@ Configuration is via environment variables (defaults match the AgCloud integrati
 | `MQTT_TOPIC`   | `MQTT/vision/detections` | Topic to publish to.                     |
 
 Publishing is **best-effort**: if the broker can't be reached at startup, the script logs a
-warning and continues (payloads are still printed). To verify delivery, subscribe in another
-terminal:
+warning and continues (payloads are still printed). To watch messages arrive, open a **second
+terminal first** (so it's listening), then run the pipeline:
+
+```bash
+# Terminal 1 — subscriber (included helper, uses the same MQTT_* env vars)
+python pipeline/mqtt_subscriber.py
+
+# Terminal 2 — run the pipeline from the repo root
+python -m pipeline.pipeline_using_agcloud_models
+```
+
+Each published payload prints in Terminal 1 as it arrives. If you have the Mosquitto CLI tools
+installed, this one-liner does the same thing:
 
 ```bash
 mosquitto_sub -h localhost -p 1883 -t "MQTT/vision/detections" -v
@@ -216,6 +261,8 @@ To run fully offline with no broker, set `MQTT_ENABLED=0` (`set MQTT_ENABLED=0` 
 - **MinIO console**: browse http://localhost:9001 (login `minioadmin` / `minioadmin123`) →
   bucket `imagery` → `pipeline/<run_id>/crops/` should contain the uploaded crops.
 - **Local disk**: `pipeline/storage/runs/<run_id>/crops/` mirrors the uploaded crops.
+- **MQTT**: run `python pipeline/mqtt_subscriber.py` in a second terminal before the pipeline;
+  one message prints per processed frame. See [MQTT publishing](#mqtt-publishing).
 
 ---
 
