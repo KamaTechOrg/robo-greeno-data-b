@@ -1,9 +1,11 @@
 import json
+import os
 from pathlib import Path
 import uuid
 
 import cv2
 import requests
+import paho.mqtt.client as mqtt
 
 from frame_quality.iqa_gate import IQAGate
 from frame_source.file_source import FileSource
@@ -25,6 +27,13 @@ import torch.nn.functional as F
 
 DEFECT_SERVICE_URL = "http://localhost:8011/infer_json"
 BUCKET_NAME = "imagery"
+
+# MQTT publishing (AgCloud integration contract: mosquitto on 1883, topic MQTT/vision/detections).
+# Set MQTT_ENABLED=0 to skip publishing entirely (e.g. running standalone without a broker).
+MQTT_ENABLED = os.getenv("MQTT_ENABLED", "1") == "1"
+MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_TOPIC = os.getenv("MQTT_TOPIC", "MQTT/vision/detections")
 
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = BASE_DIR / "storage"
@@ -58,6 +67,49 @@ mc = Minio(
 
 if not mc.bucket_exists(BUCKET_NAME):
     mc.make_bucket(BUCKET_NAME)
+
+
+# ============================================================
+# MQTT Client
+# ============================================================
+
+def _connect_mqtt():
+    """
+    Best-effort connection to the MQTT broker. Returns a connected client,
+    or None if disabled / unreachable so the pipeline still runs standalone.
+    """
+    if not MQTT_ENABLED:
+        print("MQTT publishing disabled (MQTT_ENABLED=0).")
+        return None
+
+    try:
+        # paho-mqtt >= 2.0 requires an explicit callback API version; fall back for 1.x.
+        try:
+            client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        except (AttributeError, TypeError):
+            client = mqtt.Client()
+        client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
+        client.loop_start()
+        print(f"Connected to MQTT broker at {MQTT_HOST}:{MQTT_PORT} (topic '{MQTT_TOPIC}')")
+        return client
+    except Exception as e:
+        print(f"Warning: could not connect to MQTT broker at {MQTT_HOST}:{MQTT_PORT} "
+              f"({e}). Payloads will be printed but not published.")
+        return None
+
+
+mqtt_client = _connect_mqtt()
+
+
+def publish_to_mqtt(payload):
+    """Publish the JSON payload to the detections topic. No-op if the broker is unavailable."""
+    if mqtt_client is None:
+        return
+    try:
+        info = mqtt_client.publish(MQTT_TOPIC, json.dumps(payload), qos=1)
+        info.wait_for_publish(timeout=5)
+    except Exception as e:
+        print(f"Warning: MQTT publish failed: {e}")
 
 
 # ============================================================
@@ -128,8 +180,17 @@ ROTTEN_TRANSFORM = transforms.Compose([
 def run_iqa(image):
     is_good, reason, metrics = iqa_gate.evaluate(image)
 
+    # The gate passes both "OK" and marginal "Borderline" frames (is_good=True);
+    # preserve that distinction instead of collapsing everything to OK/FAILED.
+    if not is_good:
+        status = "FAILED"
+    elif reason == "Borderline":
+        status = "Borderline"
+    else:
+        status = "OK"
+
     return {
-        "status": "OK" if is_good else "FAILED",
+        "status": status,
         "reason": reason,
         "metrics": metrics
     }
@@ -298,17 +359,26 @@ def run_pipeline(frame):
     print("Building MQTT payload...")
     payload = build_json(frame, detection, quality, detection_error)
 
+    print("Publishing to MQTT...")
+    publish_to_mqtt(payload)
+
     return payload
 
 
 if __name__ == "__main__":
     source = FolderSource("images")
-    while True:
-        frame = source.read()
-        
-        if frame is None:
-            break
-        result = run_pipeline(frame)
+    try:
+        while True:
+            frame = source.read()
 
-        print("\nPipeline Output:")
-        print(json.dumps(result, indent=4))
+            if frame is None:
+                break
+            result = run_pipeline(frame)
+
+            print("\nPipeline Output:")
+            print(json.dumps(result, indent=4))
+    finally:
+        source.release()
+        if mqtt_client is not None:
+            mqtt_client.loop_stop()
+            mqtt_client.disconnect()

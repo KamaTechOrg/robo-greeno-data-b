@@ -26,13 +26,15 @@ images/ (FolderSource)
          │    3. defect → POST http://localhost:8011/infer_json  {bucket, key}
          │    4. ripeness → best_conditional.pt  (apple/banana/orange/pineapple)
          ▼
-       build JSON payload  →  print(json.dumps(...))
+       build JSON payload
+         ├─ publish → MQTT  topic MQTT/vision/detections  (best-effort)
+         └─ print(json.dumps(...))
 ```
 
-> **Known gap — MQTT is not wired in yet.** The script prints `"Building MQTT payload..."`
-> and builds the dict via `build_json()`, but it **never publishes to an MQTT broker**. The
-> payload is only printed to the console. Wiring an actual MQTT publish (topic
-> `MQTT/vision/detections`) is a TODO. See [Known limitations](#known-limitations--gotchas).
+> The payload is published to the AgCloud MQTT broker (`mosquitto`, topic
+> `MQTT/vision/detections`) **and** printed to the console. Publishing is **best-effort**: if no
+> broker is reachable the script logs a warning and keeps running, so you can still use it
+> standalone. See [MQTT publishing](#mqtt-publishing).
 
 ---
 
@@ -44,7 +46,7 @@ Python 3.10+ (the repo's bytecode caches were built with 3.12). The full pipelin
 more than the edge requirements file lists, so install this set:
 
 ```bash
-pip install opencv-python torch torchvision pyiqa ultralytics minio requests pillow numpy
+pip install opencv-python torch torchvision pyiqa ultralytics minio requests pillow numpy paho-mqtt
 ```
 
 | Package        | Used for                                         |
@@ -55,6 +57,7 @@ pip install opencv-python torch torchvision pyiqa ultralytics minio requests pil
 | `ultralytics`  | YOLOv8 fruit detector                            |
 | `minio`        | uploading crops to object storage                |
 | `requests`     | calling the defect service                       |
+| `paho-mqtt`    | publishing the result payload to MQTT            |
 | `pillow`, `numpy` | image conversion / array handling             |
 
 > First run downloads the MobileNetV3 ImageNet weights (for the ripeness backbone) and any
@@ -64,12 +67,21 @@ pip install opencv-python torch torchvision pyiqa ultralytics minio requests pil
 
 Both `.pt` files are excluded by `.gitignore` and are **expected at the repository root**
 (the script loads them by relative path, so it must be launched from the repo root — see
-[How to run](#how-to-run)):
+[How to run](#how-to-run)). Both ship inside the **AgCloud repo** — copy them over from there:
 
-| File                 | What it is                                                        | Source |
+| File                 | What it is                                                        | Source (in the AgCloud repo) |
 |----------------------|-------------------------------------------------------------------|--------|
-| `yolov8-fruits.pt`   | YOLOv8 fruit detector weights                                      | _**<FILL IN: shared drive / release link>**_ |
-| `best_conditional.pt`| Conditional ripeness model (MobileNetV3 backbone + fruit embedding + ripeness head) | Produced by AgCloud's ripeness training: `services/fruit-orchestration/services/ripeness/model/training/train_conditional.py`. Get the trained checkpoint from _**<FILL IN: shared drive / release link>**_ |
+| `yolov8-fruits.pt`   | YOLOv8 fruit detector weights                                      | `services/inference_http/weights/yolov8-fruits.pt` |
+| `best_conditional.pt`| Conditional ripeness model (MobileNetV3 backbone + fruit embedding + ripeness head) | `services/ripeness-ml/checkpoints/mobilenet_v3_large/best_conditional.pt` (produced by AgCloud's `train_conditional.py`) |
+
+Copy them to the repo root (adjust the AgCloud path to wherever you cloned it):
+
+```bash
+# AGCLOUD = path to your AgCloud-main checkout
+AGCLOUD="/c/Users/user1/Downloads/AgCloud-main (1)/AgCloud-main"
+cp "$AGCLOUD/services/inference_http/weights/yolov8-fruits.pt" .
+cp "$AGCLOUD/services/ripeness-ml/checkpoints/mobilenet_v3_large/best_conditional.pt" .
+```
 
 > If `best_conditional.pt` is missing the script prints a warning and continues with
 > **randomly-initialised** ripeness weights (predictions will be meaningless). If
@@ -99,11 +111,15 @@ This script only talks to **two** AgCloud services. You do **not** need the full
 |-------------------------|------------------------|-------------|------------------------------------|
 | Hot object storage      | `minio-hot`            | `9000`      | `localhost:9000` (S3 API)          |
 | Fruit defect inference  | `fruit-inference-http` | `8011`      | `http://localhost:8011/infer_json` |
+| MQTT broker             | `mosquitto`            | `1883`      | `localhost:1883` (publish target)  |
 
 ```bash
 # from the AgCloud-main repo root
-docker compose up -d minio-hot fruit-inference-http
+docker compose up -d minio-hot fruit-inference-http mosquitto
 ```
+
+`mosquitto` is optional — without it, publishing is skipped (warning logged) but the pipeline
+still runs and prints payloads. See [MQTT publishing](#mqtt-publishing).
 
 Credentials are hard-coded in the script and match AgCloud defaults:
 
@@ -141,9 +157,11 @@ You should see, per image:
 
 ```
 Loading Models...
+Connected to MQTT broker at localhost:1883 (topic 'MQTT/vision/detections')
 Running IQA...
 Running detection...
 Building MQTT payload...
+Publishing to MQTT...
 
 Pipeline Output:
 {
@@ -165,6 +183,32 @@ MinIO under `imagery/pipeline/<run_id>/crops/`.
 
 ---
 
+## MQTT publishing
+
+After building each payload, the script publishes it (JSON, QoS 1) to the AgCloud broker. From
+there AgCloud's `mqtt_gateway` forwards it to Kafka (`rover.images.meta.v1`) → Flink → Postgres.
+
+Configuration is via environment variables (defaults match the AgCloud integration contract):
+
+| Env var        | Default                  | Meaning                                  |
+|----------------|--------------------------|------------------------------------------|
+| `MQTT_ENABLED` | `1`                      | Set to `0` to skip publishing entirely.  |
+| `MQTT_HOST`    | `localhost`              | Broker host.                             |
+| `MQTT_PORT`    | `1883`                   | Broker port.                             |
+| `MQTT_TOPIC`   | `MQTT/vision/detections` | Topic to publish to.                     |
+
+Publishing is **best-effort**: if the broker can't be reached at startup, the script logs a
+warning and continues (payloads are still printed). To verify delivery, subscribe in another
+terminal:
+
+```bash
+mosquitto_sub -h localhost -p 1883 -t "MQTT/vision/detections" -v
+```
+
+To run fully offline with no broker, set `MQTT_ENABLED=0` (`set MQTT_ENABLED=0` on Windows).
+
+---
+
 ## Verifying it worked
 
 - **Console**: each image prints a JSON block with `image_quality`, and (if quality passed) a
@@ -177,29 +221,25 @@ MinIO under `imagery/pipeline/<run_id>/crops/`.
 
 ## Known limitations & gotchas
 
-1. **MQTT publishing is not implemented.** The payload is only printed. To actually deliver to
-   AgCloud you'd add a publish to topic `MQTT/vision/detections` after `build_json()` in
-   `run_pipeline()`. (The AgCloud `mqtt_gateway` then forwards MQTT → Kafka.)
+1. **Ripeness supports only 4 fruits.** `apple`, `banana`, `orange`, `pineapple` (the fruit set the
+   `best_conditional.pt` embedding was trained on). Any other detected fruit gets
+   `ripeness_label: "unknown"`.
 
-2. **IQA thresholds fall back to defaults.** `IQAGate` looks for `IQA_thresholds.json` in the
-   *current working directory*, but the only copy lives in `frame_quality/IQA_thresholds.json`.
-   Run from the repo root and the gate silently uses built-in default thresholds (it prints
-   `Warning: Config file IQA_thresholds.json not found. Using defaults.`). To use the tuned
-   thresholds, copy that file to the directory you launch from, or pass an explicit path.
-
-3. **IQA never returns "Borderline" as a status.** `run_iqa()` collapses the gate result to
-   `"OK"` (pass) or `"FAILED"` (fail). The `run_pipeline()` check for `"Borderline"` is dead
-   code — borderline images are already reported as `OK` by `iqa_gate.evaluate()`.
-
-4. **Ripeness supports only 4 fruits.** `apple`, `banana`, `orange`, `pineapple`. Any other
-   detected fruit gets `ripeness_label: "unknown"`. Note `pineapple` is in the ripeness list but
-   **not** in `YOLO_FRUIT_LABELS`, so YOLO won't actually surface pineapples to the ripeness model.
-
-5. **CPU only.** `DEVICE = "cpu"` is hard-coded for the ripeness model (the IQA gate will use CUDA
+2. **CPU only.** `DEVICE = "cpu"` is hard-coded for the ripeness model (the IQA gate will use CUDA
    if available). Fine for laptop testing; revisit for throughput.
 
-6. **Hard-coded localhost endpoints.** MinIO (`localhost:9000`) and the defect service
-   (`localhost:8011`) are constants in the file. Change them there if your services run elsewhere.
+3. **Hard-coded service endpoints.** MinIO (`localhost:9000`) and the defect service
+   (`localhost:8011`) are constants in the file (MQTT is env-configurable — see above). Change the
+   MinIO/defect constants in the script if those services run elsewhere.
+
+### Recently fixed
+
+- IQA thresholds now load from `frame_quality/IQA_thresholds.json` regardless of working directory
+  (previously fell back to built-in defaults unless launched from that folder).
+- The IQA gate now reports a real `"Borderline"` status for marginal frames instead of collapsing
+  everything to `OK`/`FAILED`.
+- `pineapple` is now in `YOLO_FRUIT_LABELS`, so pineapple detections actually reach the ripeness model.
+- The result payload is now published to MQTT (best-effort), not just printed.
 
 ---
 
@@ -214,3 +254,4 @@ MinIO under `imagery/pipeline/<run_id>/crops/`.
 | Every `defect_result` is `{"error": ...}` | `fruit-inference-http` not up on `localhost:8011`, or it can't reach MinIO. `docker compose up -d fruit-inference-http`. |
 | No `detection` in output, `detection_error: "Skipped due to IQA failure"` | Image failed the quality gate (too dark/bright/blurry). Use clearer images or tune thresholds. |
 | `total_fruits: 0` | YOLO found nothing above conf 0.3, or labels weren't in `YOLO_FRUIT_LABELS`. |
+| `Warning: could not connect to MQTT broker` | `mosquitto` not running on `localhost:1883`. Start it, point `MQTT_HOST`/`MQTT_PORT` elsewhere, or set `MQTT_ENABLED=0` to silence. Pipeline still runs regardless. |
