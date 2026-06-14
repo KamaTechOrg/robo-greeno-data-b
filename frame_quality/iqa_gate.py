@@ -8,11 +8,16 @@ import torch
 from PIL import Image
 
 class IQAGate:
-    def __init__(self, config_path="IQA_thresholds.json"):
+    def __init__(self, config_path=None):
         """
-        Initializes the comprehensive IQA checker, loads thresholds, 
+        Initializes the comprehensive IQA checker, loads thresholds,
         and loads AI models (BRISQUE, NIQE) into memory.
+
+        config_path defaults to IQA_thresholds.json sitting next to this module,
+        so the tuned thresholds load regardless of the current working directory.
         """
+        if config_path is None:
+            config_path = os.path.join(os.path.dirname(__file__), "IQA_thresholds.json")
         self.config = self._load_config(config_path)
         
         # Setup device for AI models (Use GPU if available)
@@ -33,7 +38,7 @@ class IQAGate:
                 "min_laplacian_variance": 4.0,
                 
                 "brisque_weight": 0.45,
-                "niqe_qeight": 0.35,
+                "niqe_weight": 0.35,
                 "sharpness_weight": 0.20,
                 
                 "threshold": 0.55
