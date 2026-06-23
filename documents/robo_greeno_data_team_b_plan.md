@@ -117,6 +117,29 @@ In parallel, the fruit pretrained-model evaluation runs as an independent thread
 - **Test harness**: end-to-end tests that prove messages flow through. DoD: includes failure-injection cases (camera disconnect, IQA gate rejects all frames, MQTT broker unreachable). At least 5 tests that pass.
 - **Pretrained-model evaluation matrix** for fruit detection. DoD: 3–5 candidate pretrained tomato/fruit detectors evaluated on LaboroTomato's test split using the unified eval harness. mAP@0.5, mAP@0.5:0.95, per-class AP, and CPU inference latency reported per candidate. Recommendation memo for which model to swap in next sprint, with rationale.
 
+  > **Results — Pretrained-model evaluation matrix (Sprint 2, completed)**
+  >
+  > #### Detection model — LaboroTomato test set (161 images)
+  >
+  > | Model | Dataset | Scoring | mAP@0.5 | mAP@0.5:0.95 | Precision | Recall | Latency (ms/img, CPU) |
+  > |---|---|---|---|---|---|---|---|
+  > | yolov8-fruits.pt (AgCloud COCO) | LaboroTomato/test | class-agnostic¹ | **0.471** | 0.344 | 0.871 | 0.264 | ~283 |
+  >
+  > ¹ "tomato" is not in the COCO 80-class label set. GT boxes and predictions are collapsed to a single "object" class. Measures localisation only — the model fires "apple"/"orange" for tomatoes.
+  >
+  > #### Ripeness classifier — zero-shot transfer (best_conditional.pt, 1996 GT crops)
+  >
+  > | Fruit surrogate | Accuracy | Mean confidence |
+  > |---|---|---|
+  > | apple (best) | **63.0%** | 0.941 |
+  > | pineapple | 62.9% | 0.941 |
+  > | orange | 62.9% | 0.940 |
+  > | banana | 62.7% | 0.940 |
+  >
+  > GT mapping: `b/l_green`→unripe · `b/l_half_ripened`→ripe · `b/l_fully_ripened`→ripe. Fruit surrogate choice has <0.3% spread — the MobileNetV3 backbone drives accuracy, not the fruit embedding.
+  >
+  > **Recommendation:** Both models show transfer to tomatoes without any fine-tuning. The detector localises tomato regions (mAP@0.5=0.47) but mislabels them as apple/orange; the ripeness classifier achieves 63% zero-shot accuracy (well above the 50% binary random baseline). Recommended Sprint 3 action: fine-tune `yolov8-fruits.pt` on LaboroTomato train split (643 images, already on disk) to add a tomato class; add tomato training examples to the ripeness model (architecture unchanged — only the embedding needs new data). Raw metrics and demo images: `eval_out/`.
+
 **Backlog items (deliver if time, prioritized top-down)**
 - **Pipeline observability stub**: minimal logging/metrics so the team can see what's happening end-to-end. Doesn't need to be Grafana-grade yet, but the hooks should be there.
 - Light fine-tune of the chosen fruit candidate on LaboroTomato (a few epochs at low LR with `albumentations`) — accelerates Sprint 3 if it lands here.

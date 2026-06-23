@@ -302,3 +302,135 @@ To run fully offline with no broker, set `MQTT_ENABLED=0` (`set MQTT_ENABLED=0` 
 | No `detection` in output, `detection_error: "Skipped due to IQA failure"` | Image failed the quality gate (too dark/bright/blurry). Use clearer images or tune thresholds. |
 | `total_fruits: 0` | YOLO found nothing above conf 0.3, or labels weren't in `YOLO_FRUIT_LABELS`. |
 | `Warning: could not connect to MQTT broker` | `mosquitto` not running on `localhost:1883`. Start it, point `MQTT_HOST`/`MQTT_PORT` elsewhere, or set `MQTT_ENABLED=0` to silence. Pipeline still runs regardless. |
+
+---
+
+## Offline model evaluation scripts
+
+Two standalone scripts assess the AgCloud models against the LaboroTomato test dataset
+**without running any Docker services** (no MinIO, Kafka, or MQTT needed).
+
+### Prerequisites
+
+Same Python environment as the main pipeline, plus `pycocotools`:
+
+```bash
+pip install ultralytics torch torchvision pyiqa opencv-python numpy pycocotools pillow
+```
+
+Both scripts must be run from the **repo root** (same requirement as the main pipeline):
+
+```bash
+cd <repo-root>   # e.g. .../robo-greeno-data-b
+```
+
+Both model weights must be present at the repo root (`yolov8-fruits.pt`,
+`best_conditional.pt`). See [Model weights](#2-model-weights-gitignored--obtain-separately)
+above for how to obtain them.
+
+The LaboroTomato test dataset must be present locally at
+`images/laboro_tomato/test/` (161 images) with annotations at
+`images/laboro_tomato/annotations/test.json`. These are gitignored and not in the repo.
+
+---
+
+### `eval_agcloud_detection.py` — detector evaluation
+
+Runs `yolov8-fruits.pt` over the LaboroTomato test split and scores it against the COCO
+ground truth. Scoring is **class-agnostic** (the model has no "tomato" class; GT boxes and
+predictions are both collapsed to one "object" class to measure localisation fairly).
+
+**Quick dry run (5 images, saves demo images):**
+
+```bash
+python pipeline/eval_agcloud_detection.py --limit 5 --visualize 5
+```
+
+**Full run (all 161 images, saves 5 demo images):**
+
+```bash
+python pipeline/eval_agcloud_detection.py --visualize 5
+```
+
+**All options:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--weights` | `yolov8-fruits.pt` | Path to YOLO weights |
+| `--images` | `images/laboro_tomato/test` | Folder of test images |
+| `--ann` | `images/laboro_tomato/annotations/test.json` | COCO ground-truth JSON |
+| `--conf` | `0.001` | Detection confidence threshold (keep low for full mAP curve) |
+| `--out` | `eval_out` | Output directory |
+| `--limit` | `0` (all) | Process only the first N images (useful for a quick test) |
+| `--visualize` | `0` (none) | Save annotated demo images for the first N images |
+
+**Outputs** (written to `eval_out/`):
+
+| File | Contents |
+|---|---|
+| `metrics.json` | Full metric block: mAP@0.5, mAP@0.5:0.95, precision, recall, F1, latency, run config |
+| `matrix_row.csv` | Single CSV row ready to paste into the comparison matrix |
+| `per_image.csv` | Per-image breakdown: #GT boxes, #predictions, max confidence, latency |
+| `demo/*.jpg` | Annotated images — coloured boxes = model predictions, green boxes = GT |
+
+A summary table is also printed to the terminal at the end of each run.
+
+---
+
+### `eval_ripeness_model.py` — ripeness classifier evaluation
+
+Tests `best_conditional.pt` on ground-truth tomato crops. GT bounding boxes are used to
+crop tomatoes directly from the images (bypassing YOLO), then each crop is run through the
+ripeness model. Because the model has no "tomato" class, a **fruit surrogate** label is
+passed — the script tests all four supported fruits to find the best transfer.
+
+GT label mapping used: `b/l_green` → unripe · `b/l_half_ripened` → ripe ·
+`b/l_fully_ripened` → ripe.
+
+**Quick dry run (20 images, apple surrogate):**
+
+```bash
+python pipeline/eval_ripeness_model.py --limit 20 --fruit apple
+```
+
+**Full run — all 161 images, all 4 fruit surrogates compared:**
+
+```bash
+python pipeline/eval_ripeness_model.py --all-fruits
+```
+
+**All options:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--weights` | `best_conditional.pt` | Path to ripeness model checkpoint |
+| `--images` | `images/laboro_tomato/test` | Folder of test images |
+| `--ann` | `images/laboro_tomato/annotations/test.json` | COCO ground-truth JSON |
+| `--fruit` | `apple` | Fruit surrogate to use (`apple`/`banana`/`orange`/`pineapple`) |
+| `--all-fruits` | off | Run once per supported fruit and print a comparison summary |
+| `--limit` | `0` (all) | Process only the first N images |
+| `--out` | `eval_out` | Output directory |
+
+**Outputs** (written to `eval_out/`):
+
+| File | Contents |
+|---|---|
+| `ripeness_metrics.json` | Accuracy per fruit surrogate, total crops, mean confidence, label mapping used |
+
+A per-class accuracy table and confusion matrix are printed to the terminal for each surrogate.
+
+---
+
+### Baseline results (Sprint 2, LaboroTomato test set)
+
+| Model | Metric | Value |
+|---|---|---|
+| `yolov8-fruits.pt` | mAP@0.5 (class-agnostic) | **0.471** |
+| `yolov8-fruits.pt` | Precision @ conf≥0.25 | 0.871 |
+| `yolov8-fruits.pt` | Recall @ conf≥0.25 | 0.264 |
+| `yolov8-fruits.pt` | Latency (CPU) | ~283 ms/img |
+| `best_conditional.pt` | Zero-shot accuracy (apple surrogate) | **63.0%** |
+
+Neither model was trained on tomatoes. The detector fires "apple"/"orange" for tomato
+regions; the ripeness classifier achieves 63% zero-shot accuracy (above the 50% random
+baseline), indicating its visual features transfer across fruit types.
