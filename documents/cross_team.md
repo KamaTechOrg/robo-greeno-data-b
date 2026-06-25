@@ -107,4 +107,68 @@ Embedded's Week-1 unblock (URDF + servo map exist now).
 A concrete answer to Data B's open Issue #11 and a pose block they can paste in.
 A DTN-sized odometry message Cloud can ingest once their serialization lands.
 
+## Question from Data B about this:
 
+Quick reframe/question that may simplify the contract: 
+can we just pull "freshest pose" instead of streaming it?
+
+We're pulling frames from Embedded on demand, not streaming them, and
+pretty worried about CPU-only performance. Since we only want the pose
+data for frames we're going to process, subscribing to a 50 Hz pose
+stream means handling a lot more data than we'll use and running a
+queue subscription we don't need. We'd propose a slight refactoring of
+how Data-B gets pose data, depending on what Embedded is already going
+to be doing with it:
+
+* Option 1: Embedded provides it. If Embedded already has pose
+in-process (Data A co-located, or used for closed-loop control etc), a
+single call returns (frame, pose, frame_stamp_ms, pose_stamp_ms). No
+extra processing for anyone.
+
+* Option 2:  We query Data-A directly. If Embedded doesn't already
+access pose data, we'd just call Data-A directly at capture time
+rather than route pose through Embedded just to hand it to us. Then we
+don't push it to Embedded just to hand it to Data-B.
+
+Two questions to resolve this:
+
+* Embedded: Are you already accessing pose data?
+* Data A: Do you support a synchronous "give me the freshest pose now"
+call, or is 50 Hz pub/sub the only access pattern?
+
+## Response from Data-A:
+
+ Short version: yes — Data A supports a synchronous "freshest pose now" call; 50 Hz pub/sub is not the only access pattern. Our control loop already holds the
+  current pose, so freshest-pose-on-demand is just a different door on the same state. It's implemented, verified, and now merged to main, so rather than fight
+  the calendar let's settle any remaining details async.
+
+  Merged contract + reference code (pinned to the merge commit):
+  - pose helpers: https://github.com/KamaTechOrg/robo-greeno-data-a/blob/1a42122/interfaces/pose_publisher.py
+  - the contract: https://github.com/KamaTechOrg/robo-greeno-data-a/blob/1a42122/interfaces/INTEGRATION.md
+  - discussion/history: https://github.com/KamaTechOrg/robo-greeno-data-a/pull/4
+
+  What's in it:
+  - Data A side: --serve answers freshest-pose over MQTT request/reply (<topic>/get -> reply on a per-frame reply_topic); co-located callers import
+  get_latest_pose() (no broker at all).
+  - Data B side: request_latest_pose(host, port, topic, timeout_ms=100) and a --get CLI — so you can build the client against it today, no robot needed.
+  - Verified end-to-end: the reply is a schema-valid pose_stamped, the freshest pose advances between calls, and a missing server returns None on timeout.
+
+  On your two options — the deciding fact is pose ownership:
+  - Embedded owns the raw sensors (camera frames). Data A owns pose — it's the one process holding the latest. Embedded does not inherently have pose; I
+  confirmed with Dosithee that Embedded is open-loop servo control, no pose in-process.
+  - So Option 2 (c) is the default: Data B pulls pose from Data A directly at capture time. Embedded keeps grabbing frames on demand and touches no pose — zero
+  new work for them.
+  - Option 1 (a) only pays off if we co-locate Data A's estimator inside Embedded's process (then the grabber stamps frame+pose in one call, zero skew). Worth
+  doing later, especially if locomotion goes closed-loop — not required now.
+  - Either way we avoid routing pose Data A -> Embedded -> Data B just to relay it.
+
+  The timing guarantee: we bind pose to the frame's capture instant via the shared epoch-ms clock and reject the pair if the two stamps differ by more than ~50
+  ms. This is a sampling problem, not a freshness one — pose sampled at capture means the seconds of CPU inference latency cancel out exactly, because the
+  (frame, pose) pair was frozen before inference ran. The Δt gate is a simultaneity check on the two samples, and it only carries meaning because frame and pose
+  share the one Pi clock. We'll keep the 50 Hz publisher up for Cloud + replay, but Data B doesn't subscribe.
+
+  Two related notes from the Embedded thread:
+  - Dosithee offered to move servo control to ESP32 + PCA9685 so the Pi is dedicated to camera/inference. I'd recommend taking that — it frees Pi CPU for your
+  vision work, the same constraint you raised. (Follow-on: ESP32 then needs its clock disciplined to the Pi, but frame stamping stays Pi-side so spatial tagging
+  is unaffected.)
+  - Open question for everyone: who provides the IMU on real hardware, and on which MCU? Data A's pose is kinematic dead-reckoning today (drifts without IMU).
