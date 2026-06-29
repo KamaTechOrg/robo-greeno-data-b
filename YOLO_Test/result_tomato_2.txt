@@ -1,0 +1,7 @@
+=== Detection Results ===
+Total tomatoes detected: 3
+
+Tomato 1: b_green (Confidence: 0.88)
+Tomato 2: b_green (Confidence: 0.82)
+Tomato 3: b_green (Confidence: 0.70)
+=========================

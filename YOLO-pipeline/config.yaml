@@ -1,0 +1,22 @@
+# ==========================================
+# AgRobot Pipeline Configuration File
+# ==========================================
+
+# 1. YOLO Model Settings
+yolo:
+  model_path: "best.pt"         # Path to the trained weights file
+  confidence_threshold: 0.65    # Minimum confidence threshold for valid detections
+  image_size: 640               # Image resize dimension for inference
+
+# 2. MQTT & Cloud Settings
+mqtt:
+  broker_url: "mqtt.eclipseprojects.io"  # Temporary broker until Cloud team provides the real one
+  port: 1883
+  topic_detections: "robot/greenhouse_1/camera_1/detections"
+  topic_status: "robot/greenhouse_1/status"
+
+# 3. IQA (Image Quality Assessment) Settings
+iqa:
+  min_brightness: 50            # Skip frames that are too dark
+  max_brightness: 240           # Skip frames that are overexposed
+  blur_threshold: 100.0         # Metric for image blurriness (variance of Laplacian)

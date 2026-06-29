@@ -1,0 +1,16 @@
+=== Detection Results ===
+Total tomatoes detected: 12
+
+Tomato 1: l_fully_ripened (Confidence: 0.94)
+Tomato 2: l_half_ripened (Confidence: 0.94)
+Tomato 3: l_half_ripened (Confidence: 0.92)
+Tomato 4: l_half_ripened (Confidence: 0.88)
+Tomato 5: l_half_ripened (Confidence: 0.87)
+Tomato 6: l_half_ripened (Confidence: 0.60)
+Tomato 7: l_half_ripened (Confidence: 0.60)
+Tomato 8: l_half_ripened (Confidence: 0.45)
+Tomato 9: l_fully_ripened (Confidence: 0.44)
+Tomato 10: l_green (Confidence: 0.33)
+Tomato 11: l_half_ripened (Confidence: 0.28)
+Tomato 12: l_half_ripened (Confidence: 0.27)
+=========================
