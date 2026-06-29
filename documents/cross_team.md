@@ -172,3 +172,37 @@ call, or is 50 Hz pub/sub the only access pattern?
   vision work, the same constraint you raised. (Follow-on: ESP32 then needs its clock disciplined to the Pi, but frame stamping stays Pi-side so spatial tagging
   is unaffected.)
   - Open question for everyone: who provides the IMU on real hardware, and on which MCU? Data A's pose is kinematic dead-reckoning today (drifts without IMU).
+
+# Data-A Update 2:
+Already settled — pull from main, no action needed:
+- Robot status + IMU ride in one pose_stamped (position + quaternion in odom, imu.accel_mps2 / imu.gyro_rps, stamp_ms epoch-ms). You pull the freshest pose per processed frame — no 50 Hz subscription.
+- Per-frame trust: every pose carries a stability block (stable, support_feet, margin_deg) so you can skip/weight frames grabbed mid-step; we reject pairs with |Δstamp| > 50 ms.
+- Test data: send me ~10–20 real frames + detection JSON; I'll share sample_pose_stream.jsonl so we build the pose↔frame join offline first.
+
+Your three questions:
+
+1. Image storage / buckets / retention — Data A doesn't need the raw frames; only detection JSON + the pose block crosses to us, keyed by frame_id + stamp_ms. Bucket/naming conventions and retention sit with Cloud/AgCloud. Kayvan — that one's yours: does AgCloud already define a bucket scheme + retention policy we should all follow?
+
+2. Skipped frames — your default (log + offline minio sync) is fine for Data A; we don't need real-time skip stats, because the stability flag already tells us per-frame whether to trust a detection. You tagged this (cloud), so the real-time aggregate-vs-not call is Kayvan's.
+
+3. Deployment / timeline — tentative preference: an importable Python package that speaks MQTT (drops straight into the on-bot pull interface), with a container as the deploy wrapper. Final packaging is a joint call with Embedded since Pavan owns the Pi. Our timeline: schema is ready now → offline replay test next → live MQTT after. What's your earliest "very basic pipeline" date?
+
+A shared meeting time is hard to find, so let's settle the open items fully async on issue #6 — no call needed. It has a checklist with a box per owner:
+https://github.com/KamaTechOrg/robo-greeno-data-a/issues/6
+
+Please check your box there (or just reply-all) by end of week:
+- Pavan — does Embedded carry pose in-process? That picks delivery (a) stamp-at-capture vs (c) pull.
+- Scot — confirm Data B will switch its timestamp to stamp_ms (epoch ms), and your earliest pipeline date.
+- Kayvan — AgCloud bucket/retention convention, and whether Cloud wants real-time skip stats.
+- Camera→body extrinsic stays parked until the mount is fixed.
+
+I'll tick the boxes on #6 and fold any agreed change into INTEGRATION.md as answers land. And I'll swap the test fixtures the moment your frames arrive, Scot — that part doesn't need to wait on the rest.
+
+— Ingyu
+
+Links:
+- Open-items checklist (issue #6): https://github.com/KamaTechOrg/robo-greeno-data-a/issues/6
+- Contract (Data B is §2): https://github.com/KamaTechOrg/robo-greeno-data-a/blob/main/interfaces/INTEGRATION.md
+- Schema (pose + imu + stability): https://github.com/KamaTechOrg/robo-greeno-data-a/blob/main/interfaces/pose_stamped.schema.json
+- Replay fixture (200 poses): https://github.com/KamaTechOrg/robo-greeno-data-a/blob/main/interfaces/sample_pose_stream.jsonl
+
