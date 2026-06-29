@@ -366,7 +366,7 @@ def run_pipeline(frame):
 
 
 if __name__ == "__main__":
-    source = FolderSource("images")
+    source = FolderSource("images/laboro_tomato/test")
     try:
         while True:
             frame = source.read()
