@@ -9,7 +9,7 @@
 set -euo pipefail
 
 MODEL_WEIGHTS_DIR="${MODEL_WEIGHTS_DIR:-model_weights}"
-REQUIRED_FILES=("yolov8-fruits.pt" "best_conditional.pt")
+REQUIRED_FILES=("yolov8-fruits.pt" "best_conditional.pt" "brisque_svm_weights.pth" "niqe_modelparameters.mat")
 
 missing=0
 for f in "${REQUIRED_FILES[@]}"; do

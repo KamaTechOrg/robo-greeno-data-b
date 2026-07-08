@@ -34,6 +34,7 @@ COPY . .
 
 RUN mkdir -p /home/appuser/.cache/torch/hub/pyiqa /home/appuser/.config
 COPY model_weights/brisque_svm_weights.pth /home/appuser/.cache/torch/hub/pyiqa/brisque_svm_weights.pth
+COPY model_weights/niqe_modelparameters.mat /home/appuser/.cache/torch/hub/pyiqa/niqe_modelparameters.mat
 RUN chown -R appuser:appuser /home/appuser
 # Validates model_weights/*.pt are present in the build context; baked into the image here,
 # not re-checked at container startup (see scripts/docker-entrypoint.sh).

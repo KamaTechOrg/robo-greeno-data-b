@@ -9,7 +9,21 @@ IMAGE_TAG="${IMAGE_TAG:-robo-greeno-vision:local}"
 mkdir -p logs
 LOG_FILE="logs/build_$(date -u +%Y%m%dT%H%M%SZ).log"
 
+CREATE_TEMP_CERTS=false
+if [ ! -d "certs" ]; then
+    mkdir certs
+    CREATE_TEMP_CERTS=true
+fi
+
 echo "[build] building ${IMAGE_TAG}, logging to ${LOG_FILE}"
+
+cleanup() {
+    if [ "$CREATE_TEMP_CERTS" = true ]; then
+        rm -rf certs
+    fi
+}
+trap cleanup EXIT
+
 if docker build --progress=plain -t "${IMAGE_TAG}" . 2>&1 | tee "${LOG_FILE}"; then
     echo "[build] SUCCESS: ${IMAGE_TAG}"
     docker images "${IMAGE_TAG}"
