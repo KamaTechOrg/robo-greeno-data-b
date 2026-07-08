@@ -1,0 +1,14 @@
+services:
+  vision:
+    build:
+      context: .
+      args:
+        APP_UID: "${APP_UID:-1000}"   # match the deploying host's UID so bind-mounted files stay editable/deletable
+        APP_GID: "${APP_GID:-1000}"
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./crops:/data/crops   # host access to processed images; crop_path/run_id in the MQTT payload map to files here
+    # devices:
+      # - "/dev/video0:/dev/video0"   # comment out for off-bot verification (use FRAME_SOURCE=synthetic instead)

@@ -3,3 +3,9 @@ images/
 *.pt
 storage/
 CLAUDE.md
+logs/
+crops/
+.env
+certs/
+*.pth
+*.mat

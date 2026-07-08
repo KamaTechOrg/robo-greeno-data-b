@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import time
 from pathlib import Path
 import uuid
 
@@ -11,8 +13,8 @@ from frame_quality.iqa_gate import IQAGate
 from frame_source.file_source import FileSource
 from frame_source.webcam_source import WebcamSource
 from frame_source.folder_source import FolderSource
+from frame_source.synthetic_source import SyntheticSource
 from ultralytics import YOLO
-from minio import Minio
 
 import torch
 import torch.nn as nn
@@ -22,11 +24,25 @@ from PIL import Image
 import torch.nn.functional as F
 
 # ============================================================
+# Logging
+# ============================================================
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger("robo_greeno_vision")
+
+# ============================================================
 # Configuration & Directories
 # ============================================================
 
-DEFECT_SERVICE_URL = "http://localhost:8011/infer_json"
+DEFECT_SERVICE_URL = os.getenv("DEFECT_SERVICE_URL", "http://localhost:8011/infer_json")
 BUCKET_NAME = "imagery"
+
+# MinIO upload is dev/comparison-only (see CLAUDE.md Active Constraint #10). The bot does not
+# write to MinIO in production, so the client is never constructed unless explicitly opted in.
+MINIO_UPLOAD_ENABLED = os.getenv("MINIO_UPLOAD_ENABLED", "0") == "1"
 
 # MQTT publishing (AgCloud integration contract: mosquitto on 1883, topic MQTT/vision/detections).
 # Set MQTT_ENABLED=0 to skip publishing entirely (e.g. running standalone without a broker).
@@ -36,7 +52,10 @@ MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_TOPIC = os.getenv("MQTT_TOPIC", "MQTT/vision/detections")
 
 BASE_DIR = Path(__file__).resolve().parent
-STORAGE_DIR = BASE_DIR / "storage"
+MODEL_DIR = Path(os.getenv("MODEL_DIR", str(BASE_DIR.parent)))
+
+_storage_override = os.getenv("STORAGE_DIR_OVERRIDE")
+STORAGE_DIR = Path(_storage_override) if _storage_override else (BASE_DIR / "storage")
 RUNS_DIR = STORAGE_DIR / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -55,18 +74,22 @@ RIPENESS_LABELS = ["unripe", "ripe", "overripe"]
 DEVICE = "cpu"
 
 # ============================================================
-# MinIO Client
+# MinIO Client (dev/comparison only — not used on the bot in production)
 # ============================================================
 
-mc = Minio(
-    "localhost:9000",
-    access_key="minioadmin",
-    secret_key="minioadmin123",
-    secure=False
-)
+mc = None
+if MINIO_UPLOAD_ENABLED:
+    from minio import Minio
 
-if not mc.bucket_exists(BUCKET_NAME):
-    mc.make_bucket(BUCKET_NAME)
+    mc = Minio(
+        "localhost:9000",
+        access_key="minioadmin",
+        secret_key="minioadmin123",
+        secure=False
+    )
+
+    if not mc.bucket_exists(BUCKET_NAME):
+        mc.make_bucket(BUCKET_NAME)
 
 
 # ============================================================
@@ -79,7 +102,7 @@ def _connect_mqtt():
     or None if disabled / unreachable so the pipeline still runs standalone.
     """
     if not MQTT_ENABLED:
-        print("MQTT publishing disabled (MQTT_ENABLED=0).")
+        logger.info("MQTT publishing disabled (MQTT_ENABLED=0).")
         return None
 
     try:
@@ -90,11 +113,13 @@ def _connect_mqtt():
             client = mqtt.Client()
         client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
         client.loop_start()
-        print(f"Connected to MQTT broker at {MQTT_HOST}:{MQTT_PORT} (topic '{MQTT_TOPIC}')")
+        logger.info("Connected to MQTT broker at %s:%s (topic '%s')", MQTT_HOST, MQTT_PORT, MQTT_TOPIC)
         return client
     except Exception as e:
-        print(f"Warning: could not connect to MQTT broker at {MQTT_HOST}:{MQTT_PORT} "
-              f"({e}). Payloads will be printed but not published.")
+        logger.warning(
+            "could not connect to MQTT broker at %s:%s (%s). Payloads will be logged but not published.",
+            MQTT_HOST, MQTT_PORT, e,
+        )
         return None
 
 
@@ -109,7 +134,7 @@ def publish_to_mqtt(payload):
         info = mqtt_client.publish(MQTT_TOPIC, json.dumps(payload), qos=1)
         info.wait_for_publish(timeout=5)
     except Exception as e:
-        print(f"Warning: MQTT publish failed: {e}")
+        logger.warning("MQTT publish failed: %s", e)
 
 
 # ============================================================
@@ -145,9 +170,9 @@ def build_conditional(num_ripeness: int, num_fruits: int, embed_dim: int = 16) -
 # Initialize Models
 # ============================================================
 
-print("Loading Models...")
+logger.info("Loading Models...")
 
-YOLO_MODEL = YOLO("yolov8-fruits.pt")
+YOLO_MODEL = YOLO(str(MODEL_DIR / "yolov8-fruits.pt"))
 iqa_gate = IQAGate()
 
 # Load Ripeness Model
@@ -157,10 +182,10 @@ ROTTEN_MODEL = build_conditional(
 )
 
 try:
-    state_dict = torch.load("best_conditional.pt", map_location=DEVICE)
+    state_dict = torch.load(str(MODEL_DIR / "best_conditional.pt"), map_location=DEVICE)
     ROTTEN_MODEL.load_state_dict(state_dict)
 except FileNotFoundError:
-    print("Warning: best_conditional.pt not found. Make sure the file exists.")
+    logger.warning("best_conditional.pt not found in %s. Make sure the file exists.", MODEL_DIR)
 
 ROTTEN_MODEL.eval()
 
@@ -232,6 +257,8 @@ def save_crop(crop_image, crop_path):
     cv2.imwrite(str(crop_path), crop_image)
 
 def upload_crop_to_minio(bucket_name, crop_path, object_name):
+    if not MINIO_UPLOAD_ENABLED:
+        return
     mc.fput_object(bucket_name, object_name, str(crop_path))
   
 def call_defect_model(bucket_name, object_name):
@@ -340,43 +367,63 @@ def build_json(frame, detection, quality, detection_error=None):
     }
     
 def run_pipeline(frame):
-    
-    print("Running IQA...")
+
+    logger.info("Running IQA...")
     quality = run_iqa(frame.image)
 
     detection = None
     detection_error = None
-    
+
     if quality["status"] in ["OK", "Borderline"]:
         try:
-            print("Running detection...")
+            logger.info("Running detection...")
             detection = mock_detection(frame.image)
         except Exception as e:
             detection_error = str(e)
     else:
         detection_error = "Skipped due to IQA failure"
 
-    print("Building MQTT payload...")
+    logger.info("Building MQTT payload...")
     payload = build_json(frame, detection, quality, detection_error)
 
-    print("Publishing to MQTT...")
+    logger.info("Publishing to MQTT...")
     publish_to_mqtt(payload)
 
     return payload
 
 
+def _build_frame_source():
+    frame_source = os.getenv("FRAME_SOURCE", "webcam").lower()
+    if frame_source == "webcam":
+        return WebcamSource(camera_index=int(os.getenv("CAMERA_INDEX", "0")))
+    if frame_source == "synthetic":
+        return SyntheticSource()
+    if frame_source == "folder":
+        return FolderSource(os.getenv("IMAGE_SOURCE_DIR", "images"))
+    raise ValueError(f"Unknown FRAME_SOURCE '{frame_source}' (expected webcam|synthetic|folder)")
+
+
 if __name__ == "__main__":
-    source = FolderSource("images/laboro_tomato/test")
+    source = _build_frame_source()
+    retry_delay_s = float(os.getenv("FRAME_RETRY_DELAY_S", "1.0"))
+
     try:
         while True:
-            frame = source.read()
+            try:
+                frame = source.read()
+            except RuntimeError as e:
+                logger.warning("frame read failed: %s; retrying", e)
+                time.sleep(retry_delay_s)
+                continue
 
-            if frame is None:
+            if frame is None:      # only FolderSource signals end-of-batch this way
                 break
-            result = run_pipeline(frame)
 
-            print("\nPipeline Output:")
-            print(json.dumps(result, indent=4))
+            try:
+                result = run_pipeline(frame)
+                logger.debug("Pipeline output: %s", json.dumps(result, indent=4))
+            except Exception:
+                logger.exception("unhandled error processing frame %s", frame.frame_id)
     finally:
         source.release()
         if mqtt_client is not None:

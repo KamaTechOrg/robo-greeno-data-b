@@ -1,0 +1,14 @@
+.git
+images/
+pipeline/storage/
+crops/
+logs/
+__pycache__/
+**/__pycache__/
+*.pyc
+YOLO-pipeline/
+YOLO_Test/
+Stub Detector/
+documents/
+meetings/
+.env
