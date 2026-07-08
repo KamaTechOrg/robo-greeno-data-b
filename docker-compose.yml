@@ -10,5 +10,5 @@ services:
     restart: unless-stopped
     volumes:
       - ./crops:/data/crops   # host access to processed images; crop_path/run_id in the MQTT payload map to files here
-    devices:
-      - "/dev/video0:/dev/video0"   # comment out for off-bot verification (use FRAME_SOURCE=synthetic instead)
+    # devices:
+      # - "/dev/video0:/dev/video0"   # comment out for off-bot verification (use FRAME_SOURCE=synthetic instead)

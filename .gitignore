@@ -6,3 +6,6 @@ CLAUDE.md
 logs/
 crops/
 .env
+certs/
+*.pth
+*.mat
